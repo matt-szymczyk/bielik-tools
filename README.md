@@ -19,10 +19,20 @@ Bielik models have been trained to generate structured outputs. Once the model i
 
 ## Tool Calling
 
-To use function/tool calling, you need to enable the extended chat template. This can be done using the provided [advanced chat template](https://github.com/speakleash/bielik-tools/blob/main/tools/bielik_advanced_chat_template.jinja) and [tool parser](https://github.com/speakleash/bielik-tools/blob/main/tools/bielik_vllm_tool_parser.py). Start vLLM with the following command:
+To use function/tool calling, you need to enable the extended chat template. This can be done using the provided [advanced chat template](https://github.com/speakleash/bielik-tools/blob/main/tools/bielik_advanced_chat_template.jinja) and [tool parser](https://github.com/speakleash/bielik-tools/blob/main/tools/bielik_vllm_tool_parser.py).
+
+### Installation
+
+vLLM should be installed with `json-repair` package (required for handling malformed JSON from Bielik):
 
 ```bash
-vllm serve Bielik-11B-v2.5-Instruct \
+uv tool install --python 3.12 vllm==0.10.2 --with json-repair
+```
+
+### Running vLLM with Tool Calling
+
+```bash
+vllm serve Bielik-11B-v2.6-Instruct \
     --enable-auto-tool-choice \
     --tool-parser-plugin ./bielik-tools/tools/bielik_vllm_tool_parser.py \
     --tool-call-parser bielik \

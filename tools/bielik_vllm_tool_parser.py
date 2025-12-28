@@ -4,6 +4,7 @@ from typing import Union, Sequence
 
 import partial_json_parser
 from partial_json_parser.core.options import Allow
+from json_repair import repair_json  # pip install json-repair
 
 from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
                                               DeltaFunctionCall, DeltaMessage,
@@ -16,6 +17,31 @@ from vllm.transformers_utils.tokenizer import AnyTokenizer, MistralTokenizer
 from vllm.utils import random_uuid
 
 logger = init_logger(__name__)
+
+
+def split_multiple_tool_calls(s: str) -> list[str]:
+    """Split multiple tool calls in one string.
+
+    Bielik sometimes generates: {"name": "A", ...}, {"name": "B", ...}
+    in one <tool_call> tag. This function splits them into separate objects.
+    """
+    # Pattern: }, { (with optional spaces and comma)
+    parts = re.split(r'\}\s*,\s*\{', s.strip())
+
+    if len(parts) == 1:
+        return [s]
+
+    # Add back braces removed by split
+    result = []
+    for i, part in enumerate(parts):
+        if i == 0:
+            result.append(part + '}')
+        elif i == len(parts) - 1:
+            result.append('{' + part)
+        else:
+            result.append('{' + part + '}')
+
+    return result
 
 
 @ToolParserManager.register_module("bielik")
@@ -58,46 +84,88 @@ class BielikToolParser(ToolParser):
         model_output: str,
         request: ChatCompletionRequest,
     ) -> ExtractedToolCallInformation:
+        """Extract tool calls from model output with JSON repair."""
 
-        # sanity check; avoid unnecessary processing
+        # Fast path - no tool calls
         if self.tool_call_start_token not in model_output:
-            return ExtractedToolCallInformation(tools_called=False,
-                                                tool_calls=[],
-                                                content=model_output)
-        else:
-            try:
-                # there are two possible captures - between tags, or between a
-                # tag and end-of-string so the result of
-                # findall is an array of tuples where one is a function call and
-                # the other is None
-                function_call_tuples = self.tool_call_regex.findall(model_output)
+            return ExtractedToolCallInformation(
+                tools_called=False,
+                tool_calls=[],
+                content=model_output
+            )
 
-                # load the JSON, and then use it to build the Function and Tool Call
-                raw_function_calls = [
-                    json.loads(match[0] if match[0] else match[1])
-                    for match in function_call_tuples
-                ]
-                tool_calls = [
-                    ToolCall(
-                        type="function",
-                        function=FunctionCall(
-                            name=function_call["name"],
-                            # function call args are JSON but as a string
-                            arguments=json.dumps(function_call["arguments"],
-                                                 ensure_ascii=False)))
-                    for function_call in raw_function_calls
-                ]
+        try:
+            function_call_tuples = self.tool_call_regex.findall(model_output)
+            raw_function_calls = []
 
-                content = model_output[:model_output.find(self.tool_call_start_token)]
+            for match in function_call_tuples:
+                raw_content = match[0] if match[0] else match[1]
+                if not raw_content or not raw_content.strip():
+                    continue
+
+                # Split multiple tool calls in one tag
+                json_parts = split_multiple_tool_calls(raw_content)
+
+                for json_str in json_parts:
+                    json_str = json_str.strip()
+                    if not json_str:
+                        continue
+
+                    try:
+                        # Use json-repair to fix malformed JSON before parsing
+                        repaired = repair_json(json_str)
+                        if isinstance(repaired, str):
+                            parsed = json.loads(repaired)
+                        else:
+                            parsed = repaired  # json-repair can return dict
+
+                        if isinstance(parsed, dict) and "name" in parsed:
+                            raw_function_calls.append(parsed)
+                        else:
+                            logger.warning(f"Parsed JSON missing 'name' field: {parsed}")
+
+                    except Exception as e:
+                        logger.warning(f"Failed to parse tool call: {e}")
+                        logger.debug(f"Original JSON: {json_str[:200]}")
+
+            if not raw_function_calls:
+                logger.info("No valid tool calls found in output")
                 return ExtractedToolCallInformation(
-                    tools_called=True,
-                    tool_calls=tool_calls,
-                    content=content if content else None)
-            except Exception:
-                logger.exception("Error in extracting tool call from response.")
-                return ExtractedToolCallInformation(tools_called=False,
-                                                    tool_calls=[],
-                                                    content=model_output)
+                    tools_called=False,
+                    tool_calls=[],
+                    content=model_output
+                )
+
+            # Build ToolCall list with unique IDs
+            tool_calls = [
+                ToolCall(
+                    id=fc.get("id") or f"chatcmpl-tool-{random_uuid()}",
+                    type="function",
+                    function=FunctionCall(
+                        name=fc["name"],
+                        arguments=json.dumps(fc.get("arguments", {}), ensure_ascii=False)
+                    )
+                )
+                for fc in raw_function_calls
+            ]
+
+            # Extract content before first tool_call
+            content = model_output[:model_output.find(self.tool_call_start_token)]
+
+            logger.info(f"Successfully parsed {len(tool_calls)} tool call(s)")
+            return ExtractedToolCallInformation(
+                tools_called=True,
+                tool_calls=tool_calls,
+                content=content.strip() if content.strip() else None
+            )
+
+        except Exception as e:
+            logger.exception(f"Unexpected error in extract_tool_calls: {e}")
+            return ExtractedToolCallInformation(
+                tools_called=False,
+                tool_calls=[],
+                content=model_output
+            )
 
     def extract_tool_calls_streaming(
         self,

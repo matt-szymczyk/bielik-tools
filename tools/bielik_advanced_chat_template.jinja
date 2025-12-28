@@ -58,7 +58,12 @@
         {%- set content = message["content"] if message["content"] else "" %}
         {{- "<|im_start|>assistant\n" + content }}
         {%- for tool_call in message.tool_calls %}
+            {%- set tc_id = tool_call.id if tool_call.id is defined else "" %}
+            {%- if tc_id %}
+            {{- '<tool_call>{"id": "' + tc_id + '", "name": "' + tool_call.function["name"] + '", "arguments": ' + tool_call.function["arguments"] | tojson + '}</tool_call>\n'}}
+            {%- else %}
             {{- '<tool_call>{"name": "' + tool_call.function["name"] + '", "arguments": ' + tool_call.function["arguments"] | tojson + '}</tool_call>\n'}}
+            {%- endif %}
         {%- endfor %}
         {{- "<|im_end|>\n" }}
     {%- elif message["role"] == "assistant" %}
@@ -69,7 +74,7 @@
         {%- else %}
             {%- set content = message.content %}
         {%- endif %}
-        {{- "<|im_start|>tool\n" + content|string + "<|im_end|>\n" }}
+        {{- "<|im_start|>tool\n<tool_response>\n" + content|string + "\n</tool_response><|im_end|>\n" }}
     {%- else %}
         {{- raise_exception("Only user and assistant and tool_results and tool and function roles are supported, with the exception of an initial optional system message!") }}
     {%- endif %}
