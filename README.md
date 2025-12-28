@@ -23,10 +23,16 @@ To use function/tool calling, you need to enable the extended chat template. Thi
 
 ### Installation
 
-vLLM should be installed with `json-repair` package (required for handling malformed JSON from Bielik):
+**Requires vLLM >= 0.13.0** and **Python >= 3.13** with `json-repair` package (for handling malformed JSON from Bielik):
 
 ```bash
-uv tool install --python 3.12 vllm==0.10.2 --with json-repair
+uv tool install --python 3.13 vllm==0.13.0 --with json-repair
+```
+
+Or run directly with `uv`:
+
+```bash
+uv run --python 3.13 --with "vllm==0.13.0" --with json-repair -- vllm serve ...
 ```
 
 ### Running vLLM with Tool Calling
